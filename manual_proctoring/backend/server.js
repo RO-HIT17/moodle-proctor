@@ -8,6 +8,7 @@ const app = express()
 const PORT = 5000
 const SESSION_TTL_MS = 60 * 60 * 1000
 const EXAM_DURATION_SECONDS = 10 * 60
+const MAX_WARNINGS = 15
 const LOG_DIRECTORY = path.join(__dirname, 'logs')
 const WARNING_LOG_FILE = path.join(LOG_DIRECTORY, 'warnings.log')
 
@@ -124,6 +125,7 @@ function serializeAttempt(attempt) {
     startedAt: attempt.startedAt,
     submittedAt: attempt.submittedAt,
     submissionReason: attempt.submissionReason,
+    maxWarnings: MAX_WARNINGS,
     violationCount: attempt.violationCount,
     violations: attempt.violations
   }
@@ -142,6 +144,21 @@ function logWarning(studentProfile, violation) {
   } catch (error) {
     console.error('Failed to write warning log:', error)
   }
+}
+
+function submitAttempt(attempt, reason) {
+  if (attempt.status === 'submitted') {
+    return attempt
+  }
+
+  if (attempt.status === 'not_started') {
+    attempt.startedAt = Date.now()
+  }
+
+  attempt.status = 'submitted'
+  attempt.submittedAt = Date.now()
+  attempt.submissionReason = reason
+  return attempt
 }
 
 app.post('/api/login', (req, res) => {
@@ -248,8 +265,15 @@ app.post('/api/exam/violations', requireAuth, (req, res) => {
   attempt.violationCount += 1
   logWarning(req.student, violation)
 
+  if (attempt.violationCount >= MAX_WARNINGS) {
+    submitAttempt(attempt, 'warning_limit_reached')
+  }
+
   return res.json({
     success: true,
+    message: attempt.status === 'submitted'
+      ? `Exam terminated after reaching ${MAX_WARNINGS} warnings.`
+      : undefined,
     attempt: serializeAttempt(attempt)
   })
 })
@@ -258,20 +282,7 @@ app.post('/api/exam/submit', requireAuth, (req, res) => {
   const attempt = getAttemptForStudent(req.student.id)
   const reason = String(req.body.reason || 'manual_submit').trim()
 
-  if (attempt.status === 'submitted') {
-    return res.json({
-      success: true,
-      attempt: serializeAttempt(attempt)
-    })
-  }
-
-  if (attempt.status === 'not_started') {
-    attempt.startedAt = Date.now()
-  }
-
-  attempt.status = 'submitted'
-  attempt.submittedAt = Date.now()
-  attempt.submissionReason = reason
+  submitAttempt(attempt, reason)
 
   return res.json({
     success: true,
